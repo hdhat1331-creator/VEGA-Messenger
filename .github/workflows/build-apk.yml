@@ -1,0 +1,93 @@
+name: Build VEGA APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Inspect and extract VEGA project
+        shell: bash
+        run: |
+          echo "=== ZIP file ==="
+          ls -lh VEGA_Phase9_Update_Package.zip
+          file VEGA_Phase9_Update_Package.zip
+
+          mkdir -p /tmp/vega
+
+          echo "=== ZIP integrity test ==="
+          unzip -t VEGA_Phase9_Update_Package.zip || true
+
+          echo "=== ZIP contents ==="
+          unzip -Z1 VEGA_Phase9_Update_Package.zip | head -100 || true
+
+          echo "=== Extracting ZIP ==="
+          unzip -o -q VEGA_Phase9_Update_Package.zip -d /tmp/vega || true
+
+          echo "=== Searching for Flutter project ==="
+          find /tmp/vega -maxdepth 7 -name pubspec.yaml -print
+
+          APP_PUBSPEC="$(find /tmp/vega -maxdepth 7 -name pubspec.yaml -print -quit)"
+
+          if [ -z "$APP_PUBSPEC" ]; then
+            echo "ERROR: No pubspec.yaml was found in the ZIP."
+            echo "=== Extracted files ==="
+            find /tmp/vega -maxdepth 5 -type f | head -150
+            exit 1
+          fi
+
+          APP_DIR="$(dirname "$APP_PUBSPEC")"
+          echo "VEGA_APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+          echo "Flutter project found at: $APP_DIR"
+
+      - name: Generate Android project
+        working-directory: ${{ env.VEGA_APP_DIR }}
+        run: flutter create . --platforms=android
+
+      - name: Set Android app name and internet permission
+        working-directory: ${{ env.VEGA_APP_DIR }}
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="VEGA"/' android/app/src/main/AndroidManifest.xml
+
+          grep -q 'android.permission.INTERNET' android/app/src/main/AndroidManifest.xml || \
+            sed -i '/<application/i\    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+
+      - name: Get dependencies
+        working-directory: ${{ env.VEGA_APP_DIR }}
+        run: flutter pub get
+
+      - name: Generate launcher icon
+        working-directory: ${{ env.VEGA_APP_DIR }}
+        run: dart run flutter_launcher_icons
+
+      - name: Build APK
+        working-directory: ${{ env.VEGA_APP_DIR }}
+        run: flutter build apk --release
+
+      - name: Prepare APK
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/VEGA-APK"
+          cp "${VEGA_APP_DIR}/build/app/outputs/flutter-apk/app-release.apk" \
+             "${GITHUB_WORKSPACE}/VEGA-APK/VEGA.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEGA-APK
+          path: VEGA-APK/VEGA.apk
